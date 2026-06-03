@@ -1,0 +1,256 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>奏録 / SOUROKU Web版</title>
+    <style>
+        * { box-sizing: border-box; }
+        body { font-family: -apple-system, BlinkMacSystemFont, sans-serif; margin: 0; padding: 0; background: #0c0e12; color: #f0f2f5; display: flex; justify-content: center; }
+        
+        .container { width: 100%; max-width: 480px; height: 100vh; background: #0c0e12; padding: 16px; display: flex; flex-direction: column; overflow: hidden; }
+        
+        .fixed-header-panel { display: flex; flex-direction: column; flex-shrink: 0; background: #0c0e12; z-index: 10; }
+
+        h3 { margin: 5px 0 15px 0; color: #00d2ff; text-align: center; font-size: 18px; font-weight: bold; letter-spacing: 0.5px; border-bottom: 1px solid #1a1e26; padding-bottom: 10px; }
+        
+        .selector-panel { background: #131722; padding: 12px; border-radius: 8px; border: 1px solid #1e2433; margin-bottom: 12px; }
+        .panel-title { font-size: 14px; font-weight: bold; color: #00d2ff; margin-bottom: 8px; padding-left: 4px; border-left: 3px solid #00d2ff; }
+        select { width: 100%; padding: 12px; font-size: 14px; border-radius: 6px; border: 1px solid #2a3247; background: #1c2230; color: #fff; font-weight: bold; outline: none; }
+
+        .player-panel { background: #131722; padding: 12px; border-radius: 8px; border: 1px solid #00d2ff; box-shadow: 0 0 10px rgba(0,210,255,0.2); margin-bottom: 12px; display: flex; flex-direction: column; gap: 6px; }
+        audio { width: 100%; height: 38px; filter: invert(90%) hue-rotate(180deg); }
+        .time-display { font-family: monospace; font-size: 13px; font-weight: bold; text-align: right; padding-right: 4px; color: #00d2ff; }
+
+        .timeline-container { width: 100%; margin-bottom: 15px; height: 35px; }
+        canvas { width: 100%; height: 100%; background: #131722; border-radius: 6px; cursor: pointer; display: block; border: 1px solid #1e2433; }
+
+        .log-header-title { font-size: 14px; font-weight: bold; color: #00d2ff; margin-bottom: 8px; padding-left: 4px; border-left: 3px solid #00d2ff; }
+        .editor-container { border: 1px solid #1e2433; border-radius: 8px; flex: 1; overflow-y: auto; background: #131722; -webkit-overflow-scrolling: touch; padding: 4px; }
+        .line { padding: 14px 12px; border-bottom: 1px solid #1c2230; font-size: 13.5px; line-height: 1.6; cursor: pointer; color: #cdd4e0; -webkit-tap-highlight-color: transparent; transition: background 0.1s; }
+        .line:hover { background: #1c2230; }
+        
+        .highlight { background: #1c2c42 !important; font-weight: bold; color: #fff; border-left: 5px solid #00d2ff; padding-left: 7px; }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <div class="fixed-header-panel">
+        <h3>奏録 / SOUROKU</h3>
+        
+        <div class="selector-panel">
+            <div class="panel-title">Select session</div>
+            <select id="folder-selector" onchange="changeFolder(this.value)"></select>
+        </div>
+        
+        <div class="player-panel">
+            <audio id="audio" controls></audio>
+            <div class="time-display" id="time-display">00:00 / 00:00</div>
+        </div>
+
+        <div class="timeline-container">
+            <canvas id="timeline-canvas"></canvas>
+        </div>
+        
+        <div class="log-header-title">Session Logs</div>
+    </div>
+
+    <div class="editor-container" id="editor">
+        <div style="color: #64748b; text-align: center; padding-top: 60px; font-size:13px;">データを読み込み中...</div>
+    </div>
+</div>
+
+<script>
+    const audio = document.getElementById('audio');
+    const canvas = document.getElementById('timeline-canvas');
+    const ctx = canvas.getContext('2d');
+    const editor = document.getElementById('editor');
+    const timeDisplay = document.getElementById('time-display');
+    const selector = document.getElementById('folder-selector');
+
+    let totalDuration = 0;
+    let colorData = {};
+    let textTimestamps = [];
+
+    function resizeCanvas() {
+        canvas.width = canvas.parentElement.clientWidth;
+        canvas.height = canvas.parentElement.clientHeight;
+        drawTimeline();
+    }
+    window.addEventListener('resize', resizeCanvas);
+
+    function loadFolderList() {
+        fetch('data/list.txt')
+            .then(res => { if (!res.ok) throw new Error(); return res.text(); })
+            .then(rawText => {
+                selector.innerHTML = '';
+                const folders = rawText.split('\n').map(f => f.trim()).filter(f => f.length > 0);
+                folders.forEach(folder => {
+                    const opt = document.createElement('option');
+                    opt.value = folder;
+                    opt.innerText = folder.replace(/_/g, ' ');
+                    selector.appendChild(opt);
+                });
+                if (folders.length > 0) changeFolder(folders[0]);
+            })
+            .catch(err => {
+                editor.innerHTML = `<div style="color:#ef5350; text-align:center; padding-top:40px; font-size:13px;">data/list.txt が見つかりません。</div>`;
+            });
+    }
+    function changeFolder(folderName) {
+        audio.pause();
+        editor.innerHTML = `<div style="color: #64748b; text-align: center; padding-top: 60px;">読み込み中...</div>`;
+        
+        colorData = {};
+        textTimestamps = [];
+        totalDuration = 0;
+
+        let fileName = folderName;
+        if (folderName.includes('_')) {
+            const parts = folderName.split('_');
+            fileName = parts[parts.length - 1];
+        }
+        
+        audio.src = `data/${folderName}/${fileName}.mp3`;
+        audio.load();
+
+        // 【修正完了】タイポ（import等）を完全に排除した正しい通信構文
+        Promise.all([
+            fetch(`data/${folderName}/${fileName}.txt`).then(res => { if (!res.ok) throw new Error(); return res.text(); }),
+            fetch(`data/${folderName}/${fileName}_color.txt`).then(res => { if (!res.ok) throw new Error(); return res.text(); })
+        ]).then(([textRaw, colorRaw]) => {
+            parseText(textRaw);
+            parseColor(colorRaw);
+            resizeCanvas();
+        }).catch(err => {
+            editor.innerHTML = `<div style="color:#ef5350; text-align:center; padding-top:40px; font-size:13px;">データ配置を確認してください。</div>`;
+        });
+    }
+
+    function parseText(raw) {
+        editor.innerHTML = '';
+        const lines = raw.split('\n');
+        let idx = 0;
+        
+        lines.forEach((line) => {
+            const trimmed = line.trim();
+            if (!trimmed) return;
+            
+            const div = document.createElement('div');
+            div.className = 'line';
+            div.innerText = trimmed;
+            div.id = `line-${idx}`;
+            
+            let seconds = -1;
+            if (trimmed.startsWith('[') && trimmed.includes(']')) {
+                try {
+                    // 【修正完了】配列から安全に時間を取り出して置換
+                    const parts = trimmed.split(']');
+                    const tStr = parts[0].replace('[', '');
+                    const [m, s] = tStr.split(':').map(Number);
+                    seconds = m * 60 + s;
+                } catch(e) {}
+            }
+            textTimestamps.push(seconds);
+
+            div.addEventListener('click', () => {
+                if (seconds !== -1) {
+                    audio.currentTime = seconds;
+                    audio.play();
+                }
+            });
+            editor.appendChild(div);
+            idx++;
+        });
+    }
+
+    function parseColor(raw) {
+        const lines = raw.split('\n');
+        lines.forEach(line => {
+            const trimmed = line.trim();
+            if (!trimmed || !trimmed.includes(' ')) return;
+            
+            const parts = trimmed.split(' ');
+            const tStr = parts[0];
+            const status = parts[1];
+            try {
+                const [m, s] = tStr.replace('[', '').replace(']', '').split(':').map(Number);
+                colorData[m * 60 + s] = status.trim();
+            } catch(e) {}
+        });
+    }
+
+    audio.addEventListener('loadedmetadata', () => {
+        totalDuration = Math.floor(audio.duration);
+        updateTimeLabel();
+        resizeCanvas();
+    });
+
+    audio.addEventListener('timeupdate', () => {
+        const currentSeconds = Math.floor(audio.currentTime);
+        updateTimeLabel();
+        drawTimeline(currentSeconds);
+        syncEditorScroll(currentSeconds);
+    });
+
+    function drawTimeline(currentSec = 0) {
+        if (!totalDuration) return;
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        const secWidth = canvas.width / totalDuration;
+        
+        for (let s = 0; s < totalDuration; s++) {
+            const x0 = s * secWidth;
+            const status = colorData[s] || "SILENT";
+            if (status === "SPEECH") ctx.fillStyle = "#cc4a5a";
+            else if (status === "MUSIC") ctx.fillStyle = "#00a2cc";
+            else ctx.fillStyle = "#2a3247";
+            ctx.fillRect(x0, 0, secWidth + 0.6, canvas.height);
+        }
+        const indX = (currentSec / totalDuration) * canvas.width;
+        ctx.fillStyle = "#00d2ff";
+        ctx.fillRect(indX - 1, 0, 3, canvas.height);
+    }
+
+    canvas.addEventListener('click', (e) => {
+        if (!totalDuration) return;
+        const rect = canvas.getBoundingClientRect();
+        const clickX = e.clientX - rect.left;
+        const targetSec = Math.floor((clickX / canvas.width) * totalDuration);
+        audio.currentTime = targetSec;
+    });
+
+    function syncEditorScroll(currentSec) {
+        let targetIdx = -1;
+        for (let i = 0; i < textTimestamps.length; i++) {
+            if (textTimestamps[i] !== -1 && textTimestamps[i] <= currentSec) {
+                targetIdx = i;
+            } else { break; }
+        }
+        
+        document.querySelectorAll('.line').forEach(el => el.classList.remove('highlight'));
+        if (targetIdx !== -1) {
+            const activeLine = document.getElementById(`line-${targetIdx}`);
+            if (activeLine) {
+                activeLine.classList.add('highlight');
+                editor.scrollTo({
+                    top: activeLine.offsetTop - editor.offsetTop - 20,
+                    behavior: 'smooth'
+                });
+            }
+        }
+    }
+
+    function updateTimeLabel() {
+        const curM = String(Math.floor(audio.currentTime / 60)).padStart(2, '0');
+        const curS = String(Math.floor(audio.currentTime % 60)).padStart(2, '0');
+        const totM = String(Math.floor(totalDuration / 60)).padStart(2, '0');
+        const totS = String(Math.floor(totalDuration % 60)).padStart(2, '0');
+        timeDisplay.innerText = `${curM}:${curS} / ${totM}:${totS}`;
+    }
+
+    window.onload = () => { loadFolderList(); };
+</script>
+
+</body>
+</html>
